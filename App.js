@@ -6,6 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import Onboarding from './screens/Onboarding';
+import Home from './screens/Home';
 import Profile from './screens/Profile';
 import SplashScreen from './screens/SplashScreen';
 
@@ -35,7 +36,10 @@ export default function App() {
 
         setIsOnboardingCompleted(value === 'true');
       } catch (error) {
-        console.error('Error loading onboarding status:', error);
+        console.error(
+          'Error loading onboarding status:',
+          error
+        );
       } finally {
         setIsLoading(false);
       }
@@ -44,7 +48,6 @@ export default function App() {
     checkOnboarding();
   }, []);
 
-  // Called when Next is pressed on the onboarding screen
   const completeOnboarding = async (firstName, email) => {
     try {
       await AsyncStorage.multiSet([
@@ -55,12 +58,11 @@ export default function App() {
 
       setIsOnboardingCompleted(true);
     } catch (error) {
-      console.error('Error completing onboarding:', error);
+      console.error('Onboarding error:', error);
       throw error;
     }
   };
 
-  // Called when Logout is pressed on the profile screen
   const logout = async () => {
     try {
       await AsyncStorage.multiRemove(STORAGE_KEYS);
@@ -92,13 +94,22 @@ export default function App() {
           }}
         >
           {isOnboardingCompleted ? (
-            <Stack.Screen name="Profile">
-              {() => <Profile onLogout={logout} />}
-            </Stack.Screen>
+            <>
+              <Stack.Screen
+                name="Home"
+                component={Home}
+              />
+
+              <Stack.Screen name="Profile">
+                {() => <Profile onLogout={logout} />}
+              </Stack.Screen>
+            </>
           ) : (
             <Stack.Screen name="Onboarding">
               {() => (
-                <Onboarding onComplete={completeOnboarding} />
+                <Onboarding
+                  onComplete={completeOnboarding}
+                />
               )}
             </Stack.Screen>
           )}
