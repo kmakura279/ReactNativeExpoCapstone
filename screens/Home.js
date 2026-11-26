@@ -1,5 +1,11 @@
 
-import React, { useCallback, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+
 import {
   View,
   Text,
@@ -9,11 +15,18 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
+
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { loadMenu } from '../database/menuDatabase';
+import HeroBanner from '../components/HeroBanner';
+import CategoryList from '../components/CategoryList';
+
+import {
+  loadMenu,
+  filterMenuItems,
+} from '../database/menuDatabase';
 
 const IMAGE_BASE_URL =
   'https://raw.githubusercontent.com/Meta-Mobile-Developer-PC/Working-With-Data-API/main/images/';
@@ -22,44 +35,155 @@ export default function Home({ navigation }) {
   const [menuItems, setMenuItems] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [avatar, setAvatar] = useState(null);
 
-  const loadHome = async () => {
+  const [searchText, setSearchText] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedCategories, setSelectedCategories] =
+    useState([]);
+
+  const [databaseReady, setDatabaseReady] = useState(false);
+
+  // Ignore results from older queries if filters change rapidly.
+  const queryId = useRef(0);
+
+  // Load menu from SQLite (or fetch once if database is empty).
+  useEffect(() => {
+    let active = true;
+
+    const initializeMenu = async () => {
+      try {
+        setIsLoading(true);
+        setError('');
+
+        await loadMenu();
+
+        if (active) {
+          setDatabaseReady(true);
+        }
+      } catch (err) {
+        console.error('Menu initialization error:', err);
+
+        if (active) {
+          setError(
+            'Could not load the menu. Please check your connection.'
+          );
+        }
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    initializeMenu();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Reload avatar when returning from Profile.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      const loadProfile = async () => {
+        try {
+          const values = await AsyncStorage.multiGet([
+            'firstName',
+            'lastName',
+            'avatarImage',
+          ]);
+
+          if (!active) return;
+
+          const data = Object.fromEntries(values);
+
+          setFirstName(data.firstName || '');
+          setLastName(data.lastName || '');
+          setAvatar(data.avatarImage || null);
+        } catch (err) {
+          console.error('Profile loading error:', err);
+        }
+      };
+
+      loadProfile();
+
+      return () => {
+        active = false;
+      };
+    }, [])
+  );
+
+  // Debounce text search by 500ms.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchText);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [searchText]);
+
+  // Run SQLite query when category or debounced search changes.
+  useEffect(() => {
+    if (!databaseReady) return;
+
+    const currentQuery = ++queryId.current;
+
+    const applyFilters = async () => {
+      try {
+        const results = await filterMenuItems(
+          debouncedSearch,
+          selectedCategories
+        );
+
+        if (currentQuery === queryId.current) {
+          setMenuItems(results);
+          setError('');
+        }
+      } catch (err) {
+        console.error('Filtering error:', err);
+
+        if (currentQuery === queryId.current) {
+          setError('Unable to filter menu items.');
+        }
+      }
+    };
+
+    applyFilters();
+
+    return () => {
+      queryId.current++;
+    };
+  }, [databaseReady, debouncedSearch, selectedCategories]);
+
+  const retryLoading = async () => {
     try {
       setIsLoading(true);
       setError('');
 
-      const [name, surname, savedAvatar] =
-        await AsyncStorage.multiGet([
-          'firstName',
-          'lastName',
-          'avatarImage',
-        ]);
+      await loadMenu();
 
-      setFirstName(name[1] || '');
-      setLastName(surname[1] || '');
-      setAvatar(savedAvatar[1] || null);
+      setDatabaseReady(true);
 
-      const items = await loadMenu();
-      setMenuItems(items);
-    } catch (err) {
-      console.error('Home loading error:', err);
-      setError(
-        'Unable to load the menu. Check your internet connection and try again.'
+      // Refresh current filters after a successful retry.
+      const results = await filterMenuItems(
+        debouncedSearch,
+        selectedCategories
       );
+
+      setMenuItems(results);
+    } catch (err) {
+      console.error('Retry error:', err);
+      setError('Could not load menu. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
-
-  // Reload profile avatar when returning from Profile
-  useFocusEffect(
-    useCallback(() => {
-      loadHome();
-    }, [])
-  );
 
   const initials =
     (
@@ -72,7 +196,10 @@ export default function Home({ navigation }) {
       <View style={styles.menuDetails}>
         <Text style={styles.itemName}>{item.name}</Text>
 
-        <Text style={styles.itemDescription} numberOfLines={3}>
+        <Text
+          style={styles.itemDescription}
+          numberOfLines={3}
+        >
           {item.description}
         </Text>
 
@@ -83,7 +210,9 @@ export default function Home({ navigation }) {
 
       <Image
         source={{
-          uri: `${IMAGE_BASE_URL}${encodeURIComponent(item.image)}`,
+          uri:
+            IMAGE_BASE_URL +
+            encodeURIComponent(item.image),
         }}
         style={styles.foodImage}
       />
@@ -92,11 +221,10 @@ export default function Home({ navigation }) {
 
   const renderHeader = () => (
     <View>
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.brand}>
-          <Text style={styles.lemonIcon}>🍋</Text>
-          <Text style={styles.brandName}>LITTLE LEMON</Text>
+          <Text style={styles.logo}>🍋</Text>
+          <Text style={styles.brandText}>LITTLE LEMON</Text>
         </View>
 
         <TouchableOpacity
@@ -106,11 +234,11 @@ export default function Home({ navigation }) {
           {avatar ? (
             <Image
               source={{ uri: avatar }}
-              style={styles.profileAvatar}
+              style={styles.avatar}
             />
           ) : (
             <View style={styles.avatarPlaceholder}>
-              <Text style={styles.avatarInitials}>
+              <Text style={styles.avatarText}>
                 {initials}
               </Text>
             </View>
@@ -118,64 +246,70 @@ export default function Home({ navigation }) {
         </TouchableOpacity>
       </View>
 
-      {/* Section title */}
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>
-          Little Lemon Menu
-        </Text>
-        <Text style={styles.sectionSubtitle}>
-          Fresh Mediterranean dishes made with love.
-        </Text>
-      </View>
+      <HeroBanner
+        searchText={searchText}
+        onSearchChange={setSearchText}
+      />
 
-      <Text style={styles.menuHeading}>
-        Our Menu
-      </Text>
+      <CategoryList
+        selectedCategories={selectedCategories}
+        onChange={setSelectedCategories}
+      />
+
+      <View style={styles.divider} />
     </View>
   );
 
   return (
     <SafeAreaView style={styles.container}>
-      {isLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator
-            size="large"
-            color="#495E57"
-          />
-          <Text style={styles.loadingText}>
-            Loading menu...
-          </Text>
-        </View>
-      ) : error ? (
-        <View style={styles.center}>
-          <Text style={styles.errorText}>{error}</Text>
+      <FlatList
+        data={menuItems}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderMenuItem}
+        ListHeaderComponent={renderHeader}
+        extraData={{
+          searchText,
+          selectedCategories,
+          avatar,
+          firstName,
+          lastName,
+        }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.listContent}
+        ItemSeparatorComponent={() => (
+          <View style={styles.itemDivider} />
+        )}
+        ListEmptyComponent={
+          isLoading ? (
+            <View style={styles.center}>
+              <ActivityIndicator
+                size="large"
+                color="#495E57"
+              />
+              <Text style={styles.message}>
+                Loading menu...
+              </Text>
+            </View>
+          ) : error ? (
+            <View style={styles.center}>
+              <Text style={styles.errorText}>{error}</Text>
 
-          <TouchableOpacity
-            style={styles.retryButton}
-            onPress={loadHome}
-          >
-            <Text style={styles.retryText}>
-              Try Again
-            </Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <FlatList
-          data={menuItems}
-          keyExtractor={(item) => String(item.id)}
-          renderItem={renderMenuItem}
-          ListHeaderComponent={renderHeader}
-          ItemSeparatorComponent={() => (
-            <View style={styles.separator} />
-          )}
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={retryLoading}
+              >
+                <Text style={styles.retryText}>
+                  Try Again
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
             <Text style={styles.emptyText}>
-              No menu items available.
+              No dishes match your filters.
             </Text>
-          }
-        />
-      )}
+          )
+        }
+      />
     </SafeAreaView>
   );
 }
@@ -189,128 +323,106 @@ const styles = StyleSheet.create({
     paddingBottom: 35,
   },
   header: {
-    height: 80,
+    height: 76,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF',
   },
   brand: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  lemonIcon: {
-    fontSize: 29,
-    marginRight: 8,
+  logo: {
+    fontSize: 28,
+    marginRight: 9,
   },
-  brandName: {
+  brandText: {
     fontSize: 17,
     fontWeight: 'bold',
     color: '#495E57',
     letterSpacing: 2,
   },
-  profileAvatar: {
-    width: 45,
-    height: 45,
-    borderRadius: 23,
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   avatarPlaceholder: {
-    width: 45,
-    height: 45,
-    borderRadius: 23,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#495E57',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  avatarInitials: {
-    fontSize: 17,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  sectionHeader: {
-    backgroundColor: '#495E57',
-    paddingHorizontal: 20,
-    paddingVertical: 30,
-  },
-  sectionTitle: {
-    fontSize: 30,
-    fontWeight: 'bold',
-    color: '#F4CE14',
-    marginBottom: 10,
-  },
-  sectionSubtitle: {
+  avatarText: {
     fontSize: 17,
     color: '#FFFFFF',
-    lineHeight: 25,
-  },
-  menuHeading: {
-    fontSize: 22,
     fontWeight: 'bold',
-    color: '#333333',
-    marginHorizontal: 20,
-    marginTop: 25,
-    marginBottom: 15,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#D5D9D6',
+    marginHorizontal: 18,
+    marginBottom: 6,
   },
   menuItem: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
     paddingVertical: 18,
     alignItems: 'center',
   },
   menuDetails: {
     flex: 1,
-    paddingRight: 15,
+    paddingRight: 14,
   },
   itemName: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: 'bold',
     color: '#333333',
     marginBottom: 7,
   },
   itemDescription: {
     fontSize: 14,
-    color: '#777777',
+    color: '#697A73',
     lineHeight: 20,
     marginBottom: 10,
   },
   itemPrice: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: 'bold',
     color: '#495E57',
   },
   foodImage: {
-    width: 100,
-    height: 100,
-    borderRadius: 10,
-    backgroundColor: '#E5E5E5',
+    width: 95,
+    height: 95,
+    borderRadius: 8,
+    backgroundColor: '#EDEFEE',
   },
-  separator: {
+  itemDivider: {
     height: 1,
-    backgroundColor: '#E5E5E5',
-    marginHorizontal: 20,
+    backgroundColor: '#EDEFEE',
+    marginHorizontal: 18,
   },
   center: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    padding: 25,
+    justifyContent: 'center',
+    padding: 35,
   },
-  loadingText: {
-    fontSize: 16,
+  message: {
     color: '#495E57',
-    marginTop: 15,
+    marginTop: 12,
   },
   errorText: {
-    fontSize: 16,
     color: '#B00020',
     textAlign: 'center',
-    marginBottom: 20,
+    marginBottom: 18,
   },
   retryButton: {
     backgroundColor: '#495E57',
     paddingHorizontal: 25,
-    paddingVertical: 13,
+    paddingVertical: 12,
     borderRadius: 8,
   },
   retryText: {
@@ -318,8 +430,8 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   emptyText: {
+    color: '#697A73',
     textAlign: 'center',
-    color: '#777777',
     marginTop: 30,
   },
 });
